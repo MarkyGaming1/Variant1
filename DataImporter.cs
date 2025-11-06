@@ -16,6 +16,7 @@ namespace UMFST.MIP.Variant1
         {
             try
             {
+                // JSON letöltése
                 string json;
                 using (var webClient = new WebClient())
                 {
@@ -26,97 +27,140 @@ namespace UMFST.MIP.Variant1
 
                 using (var db = new AppContext())
                 {
+                    // DB reset
                     db.Database.Delete();
                     db.Database.Create();
 
                     // Authors
-                    foreach (var author in root.authors)
+                    foreach (var author in root.Authors)
                     {
-                        if (string.IsNullOrEmpty(author.Id) || string.IsNullOrEmpty(author.Name))
+                        if (string.IsNullOrWhiteSpace(author.Id) || string.IsNullOrWhiteSpace(author.Name))
                         {
-                            LogInvalid("Author", author.Id ?? "NULL");
+                            LogInvalid("Author", author.Id ?? "null");
                             continue;
                         }
-                        db.Authors.Add(author);
+                        db.Authors.Add(new Author
+                        {
+                            Id = author.Id,
+                            Name = author.Name,
+                            Country = author.Country
+                        });
                     }
+                    db.SaveChanges();
 
                     // Books
-                    foreach (var book in root.books)
+                    foreach (var book in root.Books)
                     {
-                        if (string.IsNullOrEmpty(book.Isbn) || string.IsNullOrEmpty(book.Title) || string.IsNullOrEmpty(book.AuthorId))
+                        if (string.IsNullOrWhiteSpace(book.Isbn) || string.IsNullOrWhiteSpace(book.Title))
                         {
-                            LogInvalid("Book", book.Isbn ?? "NULL");
+                            LogInvalid("Book", book.Isbn ?? "null");
                             continue;
                         }
-                        db.Books.Add(book);
-                    }
 
-                    // Customers
-                    foreach (var order in root.orders)
-                    {
-                        var c = order.customer;
-                        if (c == null || string.IsNullOrEmpty(c.Id) || string.IsNullOrEmpty(c.Name))
+                        // Ellenőrzés: Author létezik
+                        var authorExists = db.Authors.Any(a => a.Id == book.AuthorId);
+                        if (!authorExists)
                         {
-                            LogInvalid("Customer", c?.Id ?? "NULL");
+                            LogInvalid("Book", book.Isbn + " (Author not found)");
                             continue;
                         }
-                        if (!db.Customers.Any(x => x.Id == c.Id))
-                            db.Customers.Add(c);
+
+                        db.Books.Add(new Book
+                        {
+                            Isbn = book.Isbn,
+                            Title = book.Title,
+                            Price = book.Price,
+                            Stock = book.Stock,
+                            Category = book.Categories != null ? string.Join(", ", book.Categories) : "",
+                            AuthorId = book.AuthorId
+                        });
                     }
+                    db.SaveChanges();
+
+                  
+                    db.SaveChanges();
 
                     // Orders + OrderItems + Payments
-                    foreach (var order in root.orders)
+                    foreach (var order in root.Orders)
                     {
-                        if (order.customer == null) continue;
+                        if (string.IsNullOrWhiteSpace(order.Id) || string.IsNullOrWhiteSpace(order.CustomerId))
+                        {
+                            LogInvalid("Order", order.Id ?? "null");
+                            continue;
+                        }
+
+                        var customerExists = db.Customers.Any(c => c.Id == order.CustomerId);
+                        if (!customerExists)
+                        {
+                            LogInvalid("Order", order.Id + " (Customer not found)");
+                            continue;
+                        }
+
+                        DateTime? orderDate = null;
+                        if (!string.IsNullOrWhiteSpace(order.Date))
+                        {
+                            if (DateTime.TryParse(order.Date, out var parsedDate))
+                            {
+                                orderDate = parsedDate;
+                            }
+                        }
 
                         var newOrder = new Order
                         {
-                            Id = order.id,
-                            CustomerId = order.customer.Id,
-                            OrderDate = DateTime.TryParse(order.date, out DateTime dt) ? dt : DateTime.MinValue,
-                            IsPaid = order.status == "PAID" || order.status == "COMPLETED"
+                            Id = order.Id,
+                            CustomerId = order.CustomerId,
+                            OrderDate = orderDate,
+                            IsPaid = order.Status != null && order.Status.ToLower() == "paid"
                         };
-
-                        newOrder.OrderItems = new List<OrderItem>();
-                        foreach (var item in order.items)
-                        {
-                            var oi = new OrderItem
-                            {
-                                OrderId = newOrder.Id,
-                                BookId = item.isbn,
-                                Quantity = item.qty > 0 ? item.qty : 0,
-                                UnitPrice = item.unitPrice,
-                                Discount = item.discount
-                            };
-                            newOrder.OrderItems.Add(oi);
-                            db.OrderItems.Add(oi);
-                        }
-
-                        if (order.payment != null)
-                        {
-                            var pay = new Payment
-                            {
-                                Id = Guid.NewGuid().ToString(),
-                                OrderId = newOrder.Id,
-                                Amount = order.items.Sum(i => i.qty * i.unitPrice - i.discount),
-                                Method = order.payment.method,
-                                Captured = order.status == "PAID"
-                            };
-                            newOrder.Payment = pay;
-                            db.Payments.Add(pay);
-                        }
-
                         db.Orders.Add(newOrder);
-                    }
+                        db.SaveChanges();
 
-                    db.SaveChanges();
+                        foreach (var item in order.Items)
+                        {
+                            if (string.IsNullOrWhiteSpace(item.Isbn))
+                            {
+                                LogInvalid("OrderItem", "null");
+                                continue;
+                            }
+
+                            var bookExists = db.Books.Any(b => b.Isbn == item.Isbn);
+                            if (!bookExists)
+                            {
+                                LogInvalid("OrderItem", item.Isbn + " (Book not found)");
+                                continue;
+                            }
+
+                            db.OrderItems.Add(new OrderItem
+                            {
+                                OrderId = newOrder.Id,
+                                BookId = item.Isbn,
+                                Quantity = item.Qty,
+                                UnitPrice = item.UnitPrice,
+                                Discount = item.Discount
+                            });
+                        }
+
+                        if (order.Payment != null)
+                        {
+                            db.Payments.Add(new Payment
+                            {
+                                Id = order.Payment.Id,
+                                OrderId = newOrder.Id,
+                                Method = order.Payment.Method,
+                                Amount = order.Payment.Amount,
+                                Captured = order.Payment.Captured
+                            });
+                        }
+
+                        db.SaveChanges();
+                    }
                 }
 
                 Console.WriteLine("Import completed successfully.");
             }
             catch (Exception ex)
             {
-                Console.WriteLine("Error importing data: " + ex.Message);
+                Console.WriteLine("Hiba az importálás közben: " + ex.Message);
             }
         }
 
@@ -125,35 +169,30 @@ namespace UMFST.MIP.Variant1
             File.AppendAllText(InvalidLogFile, $"{type} with ID {id} is invalid\n");
         }
 
-        // RootObject a JSON szerkezethez
+        // 🔹 RootObject a JSON szerkezethez
         private class RootObject
         {
-            public List<Author> authors { get; set; }
-            public List<Book> books { get; set; }
-            public List<OrderJson> orders { get; set; }
+            public List<AuthorJson> Authors { get; set; }
+            public List<BookJson> Books { get; set; }
+            public List<CustomerJson> Customers { get; set; }
+            public List<OrderJson> Orders { get; set; }
         }
 
+        // JSON DTO-k
+        private class AuthorJson { public string Id; public string Name; public string Country; }
+        private class BookJson { public string Isbn; public string Title; public string AuthorId; public decimal Price; public int Stock; public List<string> Categories; }
+        private class CustomerJson { public string Id; public string Name; public string Email; }
         private class OrderJson
         {
-            public string id { get; set; }
-            public string date { get; set; }
-            public Customer customer { get; set; }
-            public List<OrderItemJson> items { get; set; }
-            public PaymentJson payment { get; set; }
-            public string status { get; set; }
+            public string Id;
+            public string CustomerId;
+            public DateTime OrderDate;
+            public string Date;
+            public string Status;
+            public List<OrderItemJson> Items;
+            public PaymentJson Payment;
         }
-
-        private class OrderItemJson
-        {
-            public string isbn { get; set; }
-            public int qty { get; set; }
-            public decimal unitPrice { get; set; }
-            public decimal discount { get; set; }
-        }
-
-        private class PaymentJson
-        {
-            public string method { get; set; }
-        }
+        private class OrderItemJson { public string Isbn; public int Qty; public decimal UnitPrice; public decimal Discount; }
+        private class PaymentJson { public string Id; public string Method; public decimal Amount; public bool Captured; }
     }
 }

@@ -201,6 +201,9 @@ namespace UMFST.MIP.Variant1
             {
                 MessageBox.Show("Hiba az importálás közben: " + ex.Message);
             }
+            DataImporter.ImportData();
+            LoadBooks();
+            LoadOrders();
         }
     }
 }
